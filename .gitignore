@@ -1,0 +1,21 @@
+# Installed upstream code and dependencies are fetched by Install.ps1.
+/upstream/
+/runtime/
+/data/
+/logs/
+/dist/
+# Machine settings and generated secrets stay on the local machine.
+/config/local.json
+/config/searxng.yml
+/.webui_secret_key
+.env
+.env.*
+!.env.example
+*.gguf
+*.safetensors
+*.sqlite
+*.sqlite3
+*.db
+__pycache__/
+*.py[cod]
+node_modules/

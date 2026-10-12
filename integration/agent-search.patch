@@ -1,0 +1,82 @@
+diff --git a/src/rerank.ts b/src/rerank.ts
+index e5d3c86..9a0bd34 100644
+--- a/src/rerank.ts
++++ b/src/rerank.ts
+@@ -22,6 +22,7 @@ import {
+ } from './config.js';
+ import { logMessage } from './logging.js';
+ import { rerankCache } from './cache.js';
++const rerankRequired = process.env.RERANK_REQUIRED === 'true';
+ 
+ // ============ 类型定义 ============
+ export interface SearchResult {
+@@ -185,6 +186,7 @@ async function rerankWithCrossEncoder(query: string, results: SearchResult[]): P
+ 
+   // API 失败：降级到 SearXNG 原始排序
+   if (!data || !data.results || data.results.length === 0) {
++    if (rerankRequired) throw new Error('BGE rerank failed or returned no results');
+     logMessage(null, 'warning', 'Rerank API 返回空结果，降级为 SearXNG 原始排序');
+     return fallbackToOriginal(results);
+   }
+@@ -207,6 +209,7 @@ async function rerankWithCrossEncoder(query: string, results: SearchResult[]): P
+ 
+   // 兜底：若返回不足，用未命中的候选按原顺序补齐到 TOP_K
+   if (scored.length < Math.min(TOP_K, results.length)) {
++    if (rerankRequired) throw new Error('BGE rerank returned incomplete results');
+     const seen = new Set(scored.map(s => s.url));
+     for (const r of results) {
+       if (scored.length >= TOP_K) break;
+@@ -245,7 +248,7 @@ export async function rerankResults(query: string, results: SearchResult[]): Pro
+   }
+ 
+   // 短路：候选数不足，直接透传
+-  if (results.length <= TOP_K) {
++  if (results.length <= TOP_K && !rerankRequired) {
+     return passThrough(results);
+   }
+ 
+@@ -254,11 +257,13 @@ export async function rerankResults(query: string, results: SearchResult[]): Pro
+     try {
+       return await rerankWithCrossEncoder(query, results);
+     } catch (error) {
++      if (rerankRequired) throw error;
+       logMessage(null, 'error', `Rerank 异常，降级为 SearXNG 原始排序: ${error instanceof Error ? error.message : String(error)}`);
+       return fallbackToOriginal(results);
+     }
+   }
+ 
+   // 未配置 rerank：信任 SearXNG 原始排序（仅 CLI 宽松场景）
++  if (rerankRequired) throw new Error('BGE rerank is not configured');
+   return fallbackToOriginal(results);
+ }
+diff --git a/src/research.ts b/src/research.ts
+index 87d7ca2..45c9d56 100644
+--- a/src/research.ts
++++ b/src/research.ts
+@@ -52,6 +52,7 @@ export interface SearchResultItem {
+  */
+ export interface KeywordSearchResult {
+   keyword: string;
++  candidateCount?: number;
+   results: SearchResultItem[];
+   error?: string;
+ }
+@@ -161,7 +162,9 @@ export class ResearchServer {
+         };
+       }
+ 
+-      const rerankedResults = await rerankResults(keyword, filteredResults);
++      const candidateLimit = Number(process.env.SEARCH_CANDIDATE_LIMIT || '50');
++      const candidates = filteredResults.slice(0, candidateLimit);
++      const rerankedResults = await rerankResults(keyword, candidates);
+ 
+       const dedupedResults: SearchResultItem[] = [];
+       const newUrls: string[] = [];
+@@ -186,6 +189,7 @@ export class ResearchServer {
+ 
+       return {
+         keyword,
++        candidateCount: candidates.length,
+         results: dedupedResults
+       };
+     } catch (error: any) {

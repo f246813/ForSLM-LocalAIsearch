@@ -1,0 +1,11 @@
+{
+  "installed_on": "2026-10-12",
+  "open_webui_package": "0.12.0",
+  "open_webui_source": "f8ae8a6c328946dc62cd0712961a0632574581bf",
+  "agent_search_source": "b465de98d802ac13de0636a9657bf6fa4e7d2812",
+  "searxng_source": "ad46ebd7d87666edb5f116c5b274b47f689ac6cd",
+  "python": "3.11.17",
+  "uv": "0.13.0",
+  "llama_cpp_local_build": "11029 (5c53396b8)",
+  "node": "24.21.0"
+}

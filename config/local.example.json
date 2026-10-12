@@ -1,0 +1,8 @@
+{
+  "llama_server": "D:\\llama.cpp\\llama-server.exe",
+  "qwen_model": "D:\\llama.cpp\\models\\Qwen3-4B-Q5_K_M.gguf",
+  "reranker_model": "D:\\llama.cpp\\models\\BGE-Reranker-v2-M3-Q5_K_M.gguf",
+  "gpu_layers": 99,
+  "qwen_context": 32768,
+  "reranker_context": 8192
+}
