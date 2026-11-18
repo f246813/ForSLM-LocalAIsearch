@@ -89,4 +89,5 @@ foreach ($name in 'local.json', 'searxng.yml') {
         Copy-Item -LiteralPath "$projectRoot\config\$example" -Destination $path
     }
 }
+Run "$projectRoot\runtime\webui-env\Scripts\python.exe" @("$projectRoot\integration\service_manager.py", 'validate')
 Write-Host 'Installation complete. Edit config\local.json to point to llama-server and both GGUF models, then run Start.cmd.'

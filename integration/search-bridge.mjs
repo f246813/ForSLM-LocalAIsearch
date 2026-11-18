@@ -5,14 +5,16 @@ import { fetchAndConvertToMarkdown, isUrlReadFailure } from '../upstream/agent-s
 
 const server = new Server({ name: 'forslm-local-search', version: '1.0.0' }, { capabilities: { tools: {} } });
 const query = process.argv[2];
-const emit = data => process.stdout.write(JSON.stringify(data) + '\n');
+const emit = data => new Promise((resolve, reject) => {
+  process.stdout.write(JSON.stringify(data) + '\n', error => error ? reject(error) : resolve());
+});
 try {
   const research = new ResearchServer();
   research.setServer(server);
   const response = await research.processSearch({ searchedKeywords: [query], lang: 'all' });
   const result = JSON.parse(response.content[0].text).searchResults?.[0];
   if (!result || result.error || !result.results.length) throw new Error(result?.error || '搜索引擎未返回可用结果');
-  emit({ type: 'ranked', candidateCount: result.candidateCount, selectedCount: result.results.length });
+  await emit({ type: 'ranked', candidateCount: result.candidateCount, selectedCount: result.results.length });
   const sources = await Promise.all(result.results.map(async (item, index) => {
     let content = '';
     try {
@@ -21,10 +23,10 @@ try {
     } catch (error) { console.error('Page read failed:', item.link, String(error)); }
     return { ...item, id: index + 1, content: content || item.snippet, excerptOnly: !content };
   }));
-  emit({ type: 'result', query, candidateCount: result.candidateCount, sources });
+  await emit({ type: 'result', query, candidateCount: result.candidateCount, sources });
   process.exit(0); // Upstream search uses timeout promises that otherwise keep the CLI alive.
 } catch (error) {
   console.error(String(error));
-  emit({ type: 'error', message: String(error) });
+  await emit({ type: 'error', message: String(error) });
   process.exit(1);
 }

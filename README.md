@@ -62,7 +62,7 @@ cd D:\ForSLM-LocalAIsearch
 
 JSON 中反斜杠写作 `\\`。显存不足时减少 `gpu_layers` 或上下文长度；`gpu_layers: 0` 使用 CPU。此设置同时控制两个模型的 GPU 层数。
 
-如模型服务已分别运行在 `127.0.0.1:8080` 和 `127.0.0.1:8081`，启动脚本会复用。确认端口对应 Qwen 与 BGE。
+启动会核对已占用端口的服务身份。可在本机配置指定外部模型和搜索地址。详见[运行配置与升级](docs/README.md#运行配置与升级)。
 
 ## 启动与使用
 
@@ -70,8 +70,9 @@ JSON 中反斜杠写作 `\\`。显存不足时减少 `gpu_layers` 或上下文�
 
 ```powershell
 .\Start.cmd
-# 不自动打开浏览器：
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start.ps1 -NoBrowser
+.\Start.cmd -NoBrowser
+.\Start.cmd -ManagedBrowser auto
+.\Start.cmd -ManagedBrowser 'C:\path\to\firefox.exe'
 ```
 
 等待服务就绪，打开 **http://127.0.0.1:3000**：
@@ -83,7 +84,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Start.ps1 -NoBrowser
 
 普通问答执行搜索。追问会先由 Qwen 结合最近对话整理独立查询；Open WebUI 自动标题等后台任务直接使用 Qwen。
 
-双击 **Stop.cmd** 关闭本项目启动的服务及其 Python 子进程。通过 PID、启动时间、程序路径识别进程；复用的现有模型服务不会被停止。
+双击 **Stop.cmd** 停止本项目启动的服务。普通浏览器关闭最后一个项目标签页后，空闲的项目自有模型会在宽限期后卸载，服务端口继续可用。使用 `-ManagedBrowser` 打开的独立 Edge、Chrome 或 Firefox 会话在最后一个窗口关闭时触发整套停机。支持 Firefox 正式版和 ESR。 [受管浏览器用法](docs/browser-shutdown-design.md)
 
 | 服务 | 默认地址 |
 | --- | --- |
@@ -102,12 +103,8 @@ Open WebUI **工作区 → 函数 → Qwen3-4B · 联网搜索**（ID：`local_a
 | --- | --- | --- |
 | `Candidate_Count` | 30 | 候选池上限，范围 20–50 |
 | `Top_K` | 7 | BGE 保留数量，范围 5–10 |
-| `Qwen_URL` | `http://127.0.0.1:8080/v1` | 回答模型 API |
-| `BGE_URL` | `http://127.0.0.1:8081/v1` | 重排 API |
-| `SearXNG_URL` | `http://127.0.0.1:8888` | 搜索服务 |
-| `Node_Path` | 自动寻找 Node.js | Node 可执行程序 |
 
-更改 API 地址只影响 Pipe，不修改启动脚本的默认端口。
+模型、端点、设备和超时通过配置文件管理。详见[运行配置与升级](docs/README.md#运行配置与升级)。
 
 SearXNG 配置在 `config/searxng.yml`。模板启用 Bing、DuckDuckGo、Brave、百度、Wikipedia；Google 保留但默认未启用。Bing 直接使用 `https://cn.bing.com`，避免本机网络下 `www.bing.com` 的地域跳转产生空结果；其他地区可按实际网络改为 `https://www.bing.com`。修改后用 Stop/Start 重启。
 
@@ -123,13 +120,16 @@ SearXNG 配置在 `config/searxng.yml`。模板启用 Bing、DuckDuckGo、Brave�
 
 ## 目录与上游复用
 
+[服务生命周期与问答工作流](docs/README.md)
+
 ```text
 Install.cmd / Install.ps1       安装上游组件与环境
 Start.cmd / Start.ps1           启动模型、搜索、网页
-Stop.cmd / Stop.ps1             停止项目创建的进程
+Stop.cmd / Stop.ps1             请求管理进程退出
 config/*.example.*             无密钥配置模板
 config/versions.json           上游版本
 config/*-requirements.lock.txt  Python 依赖
+integration/service_manager.py      服务生命周期管理
 integration/local_search_pipe.py    Open WebUI Pipe
 integration/register-pipe.py        官方 Functions API 注册
 integration/search-bridge.mjs       连接 agent-search 模块
@@ -151,7 +151,3 @@ runtime/ upstream/ data/ logs/  本机生成，不发布
 本仓库原创连接代码与脚本使用 **AGPL-3.0-or-later**，见 [LICENSE](LICENSE)。上游代码、补丁涉及的原始代码和模型遵循各自许可证，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。保留 Open WebUI 品牌与界面。
 
 补丁只涉及 agent-search 候选池上限、真实候选数、BGE 必须执行与失败提示，以及 SearXNG 可选 Valkey 日志的 Windows `pwd` 兼容。
-
-## 已完成的本机运行
-
-Windows 本机通过 Open WebUI `/api/chat/completions` 已完成 MCP 问题的搜索、BGE Top 7、网页读取、Qwen 引用回答，HTTP 200，约 10.5 秒。发布版安装器已在当前环境完成重复安装、上游编译与依赖安装；尚未在另一台干净机器上验证。

@@ -3,6 +3,7 @@
 /runtime/
 /data/
 /logs/
+/test-records/
 /dist/
 # Machine settings and generated secrets stay on the local machine.
 /config/local.json

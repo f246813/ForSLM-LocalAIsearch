@@ -1,5 +1,9 @@
-"""Serve the upstream SearXNG Flask app with the existing Waitress WSGI server."""
+"""Serve the upstream SearXNG Flask app with Waitress."""
 from waitress import serve
 from searx.webapp import app
 
-serve(app, host="127.0.0.1", port=8888, threads=12)
+from runtime_config import RESOLVED, read_json
+from urllib.parse import urlsplit
+
+address = urlsplit(read_json(RESOLVED)["searxng_url"])
+serve(app, host=address.hostname, port=address.port, threads=12)
