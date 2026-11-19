@@ -23,7 +23,7 @@ from aiohttp import ClientError, ClientResponseError, ClientSession, ClientTimeo
 import httpx
 
 from managed_browser import Browser, BrowserSession, path_key
-from model_gateway import Route, forward, model_command
+from model_gateway import MODEL_STATE_ERRORS, Route, forward, model_command
 from runtime_config import (
     DEFAULT_URLS, LOCAL, RESOLVED, ROOT, RUNTIME, local_file, read_json, read_local, resolve, write_json,
 )
@@ -38,6 +38,7 @@ SEARX_PYTHON = RUNTIME / "searxng-env/Scripts/python.exe"
 SCRIPTS = ROOT / "integration"
 LOGS = ROOT / "logs"
 STARTUP_SECONDS = 300
+UNLOAD_RETRY_DELAYS = (2, 5)
 WEBUI_MODEL_KEY = "local-llama"
 QWEN_PROVIDER_URL = "forslm_qwen_url"
 
@@ -104,6 +105,12 @@ class PipeTask:
     state: str = "running"
 
 
+@dataclass
+class ModelUnload:
+    failures: int = 0
+    retry_at: float = 0.0
+
+
 def verify_database():
     history = ROOT / "data/open-webui/webui.db"
     if history.exists():
@@ -139,6 +146,7 @@ class Manager:
         self.error = None
         self.tasks = {}
         self.model_requests = set()
+        self.model_admissions = 0
         self.routes = {}
         self.runners = []
         self.processes = {}
@@ -483,60 +491,95 @@ class Manager:
                 raise RuntimeError("config/local.json changed during startup. Start again to resolve its new settings.")
             write_json(LOCAL, migrated)
 
+    async def check_model_idle(self, route):
+        try:
+            return await route.idle(self.client)
+        except MODEL_STATE_ERRORS as error:
+            return error
+
+    async def try_unload(self, route, idle):
+        if isinstance(idle, Exception):
+            route.uncertain = True
+            return idle
+        try:
+            await route.unload(self.client)
+        except MODEL_STATE_ERRORS as error:
+            return error
+        return None
+
     async def watch_pages(self):
-        lazy_routes = [route for route in self.routes.values() if route.lazy]
+        lazy_routes = {key: route for key, route in self.routes.items() if route.lazy}
         if not lazy_routes:
             await self.stop_requested.wait()
             return
-        disconnected = False
-        checked = False
+        presence_url = WEBUI + "/_forslm/presence"
         last_generation = None
-        idle_wait = False
-        while True:
+        pending = {}
+        presence_unavailable = False
+        grace = self.settings["unload_grace_seconds"]
+        while not self.stopping:
             await asyncio.sleep(0.5)
             try:
-                presence = await self.json("GET", WEBUI + "/_forslm/presence", headers=self.headers)
-                live = presence["count"]
-                empty = presence["empty_seconds"]
-                generation = presence["generation"]
-                if disconnected:
+                presence = await self.json("GET", presence_url, headers=self.headers)
+                live, empty, generation = presence["count"], presence["empty_seconds"], presence["generation"]
+                if presence_unavailable:
                     log.info("Open WebUI page presence recovered")
-                    disconnected = False
-            except (ClientError, TimeoutError, KeyError, ValueError) as error:
-                if not disconnected:
+                    presence_unavailable = False
+                if live or empty is None:
+                    pending.clear()
+                    last_generation = None
+                    continue
+                if generation != last_generation:
+                    pending = {key: ModelUnload() for key in lazy_routes}
+                    last_generation = generation
+                if empty < grace or self.stopping or self.tasks or self.model_requests:
+                    continue
+                now = time.monotonic()
+                due = [key for key, attempt in pending.items() if attempt.retry_at <= now]
+                if not due:
+                    continue
+                admissions = self.model_admissions
+                checks = await asyncio.gather(*(self.check_model_idle(route) for route in lazy_routes.values()))
+                if any(result is False for result in checks):
+                    continue
+                current = await self.json("GET", presence_url, headers=self.headers)
+                if (current["count"] or current["generation"] != generation
+                        or current["empty_seconds"] is None or current["empty_seconds"] < grace):
+                    continue
+            except MODEL_STATE_ERRORS as error:
+                if not presence_unavailable:
                     log.warning("Auto-unload delayed: page presence unavailable: %s", error)
-                disconnected = True
+                presence_unavailable = True
                 continue
-            if live or empty is None or generation != last_generation:
-                checked = False
-                idle_wait = False
-            last_generation = generation
-            if not live and not checked and empty is not None and empty >= self.settings["unload_grace_seconds"]:
-                if self.stopping or self.tasks or self.model_requests:
+            if (self.stopping or self.tasks or self.model_requests
+                    or self.model_admissions != admissions):
+                continue
+
+            self.unloading = True
+            self.unload_finished.clear()
+            try:
+                idle = dict(zip(lazy_routes, checks))
+                results = await asyncio.gather(*(self.try_unload(lazy_routes[key], idle[key]) for key in due))
+            finally:
+                self.unloading = False
+                self.unload_finished.set()
+            now = time.monotonic()
+            for key, error in zip(due, results):
+                if error is None:
+                    del pending[key]
                     continue
-                try:
-                    idle = await asyncio.gather(*(route.idle(self.client) for route in lazy_routes))
-                    if not all(idle):
-                        continue
-                    current = await self.json("GET", WEBUI + "/_forslm/presence", headers=self.headers)
-                except (ClientError, TimeoutError, ValueError, KeyError, TypeError) as error:
-                    if not idle_wait:
-                        log.warning("Auto-unload delayed: could not confirm page and model state: %s", error)
-                    idle_wait = True
-                    continue
-                if current["count"] or current["generation"] != generation:
-                    continue
-                if self.stopping or self.tasks or self.model_requests:
-                    continue
-                self.unloading = True
-                self.unload_finished.clear()
-                log.info("Last page disconnected. Unloading idle models.")
-                try:
-                    await asyncio.gather(*(route.unload(self.client) for route in lazy_routes))
-                    checked = True
-                finally:
-                    self.unloading = False
-                    self.unload_finished.set()
+                attempt = pending[key]
+                attempt.failures += 1
+                name = lazy_routes[key].name
+                detail = str(error) or type(error).__name__
+                if attempt.failures > len(UNLOAD_RETRY_DELAYS):
+                    del pending[key]
+                    log.warning("%s: unload not confirmed after %s attempts: %s", name, attempt.failures, detail)
+                else:
+                    delay = UNLOAD_RETRY_DELAYS[attempt.failures - 1]
+                    attempt.retry_at = now + delay
+                    log.warning("%s: unload attempt %s not confirmed, retry in %s seconds: %s",
+                                name, attempt.failures, delay, detail)
 
     async def watch_services(self):
         while True:
@@ -653,12 +696,19 @@ def control_request(client, method="GET", route="/status", **kwargs):
         return None
 
 
+class StartupModeConflict(RuntimeError):
+    pass
+
+
 def check_browser_mode(browser, status):
-    if browser is None:
-        return
     bound = status.get("browser")
-    if not bound or path_key(bound["path"]) != path_key(browser.exe):
-        raise RuntimeError("A different ForSLM instance is running. Run Stop.cmd before changing browser mode.")
+    if browser is None and bound is None:
+        return
+    if (browser is not None and bound
+            and path_key(bound["path"]) == path_key(browser.exe)
+            and path_key(bound["profile"]) == path_key(browser.profile)):
+        return
+    raise StartupModeConflict("Startup mode conflicts with the running ForSLM instance. Run Stop.cmd before restarting.")
 
 
 def launch(args, client):
@@ -668,7 +718,6 @@ def launch(args, client):
     if not status and not manager_exists():
         command = [sys.executable, str(Path(__file__).resolve()), "run", "--launch", launch_id]
         if args.browser:
-            args.browser.preflight()
             command.extend(("--browser", str(args.browser.exe)))
         with (LOGS / "manager.log").open("ab") as log_file:
             child = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file,
@@ -750,5 +799,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except StartupModeConflict as error:
+        print(error, file=sys.stderr)
+        sys.exit(3)
     except Exception as error:
         sys.exit(str(error))

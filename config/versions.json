@@ -6,6 +6,6 @@
   "searxng_source": "ad46ebd7d87666edb5f116c5b274b47f689ac6cd",
   "python": "3.11.17",
   "uv": "0.13.0",
-  "llama_cpp_local_build": "11029 (5c53396b8)",
+  "llama_cpp_local_build": "12531 (e4b620af1)",
   "node": "24.21.0"
 }

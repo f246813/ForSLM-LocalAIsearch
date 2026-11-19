@@ -13,6 +13,7 @@ from yarl import URL
 from runtime_config import RUNTIME
 
 log = logging.getLogger("ForSLM")
+MODEL_STATE_ERRORS = (ClientError, TimeoutError, ValueError, KeyError, TypeError)
 HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                "te", "trailer", "transfer-encoding", "upgrade"}
 
@@ -40,12 +41,18 @@ class Route:
         async with client.get(self.upstream + "/models", timeout=ClientTimeout(total=3)) as response:
             response.raise_for_status()
             entries = (await response.json())["data"]
-        if len(entries) != 1 or entries[0]["id"] != self.name:
+        if (not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict)
+                or entries[0].get("id") != self.name):
             raise ValueError(f"expected only {self.name} on the private router")
         status = entries[0]["status"]
-        if status.get("failed") and status.get("value") != "unloaded":
+        if not isinstance(status, dict):
+            raise ValueError(f"{self.name}: invalid model status")
+        value = status["value"]
+        if not isinstance(value, str):
+            raise ValueError(f"{self.name}: invalid model status")
+        if status.get("failed") and value != "unloaded":
             raise ValueError(f"{self.name} model process exited with code {status.get('exit_code')}")
-        return status["value"]
+        return value
 
     async def idle(self, client):
         if self.lazy:
@@ -58,6 +65,10 @@ class Route:
                               timeout=ClientTimeout(total=2)) as response:
             response.raise_for_status()
             slots = await response.json()
+        if not isinstance(slots, list) or any(
+            not isinstance(slot, dict) or type(slot.get("is_processing")) is not bool for slot in slots
+        ):
+            raise ValueError(f"{self.name}: invalid inference slot status")
         return not any(slot["is_processing"] for slot in slots)
 
     async def wait_for_cleanup(self, client):
@@ -67,7 +78,7 @@ class Route:
                 await asyncio.sleep(0.25)
                 while not await self.idle(client):
                     await asyncio.sleep(0.25)
-        except (ClientError, TimeoutError, ValueError, KeyError, TypeError) as error:
+        except MODEL_STATE_ERRORS as error:
             log.info("%s: could not confirm inference cleanup: %s", self.name, error or "deadline elapsed")
 
     async def unload(self, client):
@@ -80,15 +91,16 @@ class Route:
                     while await self.state(client) != "unloaded":
                         await asyncio.sleep(0.25)
             log.info("%s: unloaded", self.name)
-        except (ClientError, TimeoutError, ValueError, KeyError, TypeError) as error:
+        except MODEL_STATE_ERRORS:
             self.uncertain = True
-            log.warning("%s: unload status could not be confirmed: %s", self.name, error)
+            raise
+        self.uncertain = False
 
     async def recover(self, client):
         if self.uncertain:
             try:
                 self.uncertain = await self.state(client) not in ("loaded", "sleeping", "unloaded")
-            except (ClientError, TimeoutError, ValueError, KeyError, TypeError):
+            except MODEL_STATE_ERRORS:
                 return False
             if not self.uncertain:
                 log.info("%s: model state available again", self.name)
@@ -152,6 +164,8 @@ async def forward(manager, route, request):
     discovery = normalized in ("/health", "/v1/health", "/models", "/v1/models")
     current = asyncio.current_task()
     manager.model_requests.add(current)
+    if not discovery:
+        manager.model_admissions += 1
     output = None
     forwarded = False
     try:

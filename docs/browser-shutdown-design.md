@@ -25,7 +25,19 @@ ForSLM 可以用 Edge、Chrome、Firefox 正式版或 Firefox ESR 启动独立�
 | Firefox 正式版、ESR | 支持直接指定 `firefox.exe`。当 Firefox 是 Windows 默认浏览器时，`-ManagedBrowser auto` 选择同一适配器。 |
 | 其他桌面浏览器 | 可正常打开 Open WebUI。受管能力以各适配器验收结果为准。 |
 
-每个项目管理实例绑定一个受管浏览器会话。再次用同一浏览器启动时复用已绑定的会话。切换浏览器，或从普通入口及 `-NoBrowser` 改用受管模式时，先显式结束已有实例再启动，避免把常驻 API 服务意外绑定到浏览器窗口。启动前检查配置目录占用和适用的浏览器策略。启动后以浏览器实际持有的配置目录确认归属。Edge 的 `UserDataDir` 策略可以覆盖启动参数，遇到覆盖时应报告受管模式不可用。 [Chromium 配置目录说明](https://github.com/chromium/chromium/blob/main/docs/user_data_dir.md) · [Firefox 启动参数](https://firefox-source-docs.mozilla.org/browser/CommandLineParameters.html#startup-and-profiles) · [Edge 配置目录策略](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/userdatadir) · [Edge 后台进程说明](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/startupboostenabled)
+每个项目管理实例最多绑定一个受管浏览器会话。启动前检查配置目录占用和适用的浏览器策略。启动后以浏览器实际持有的配置目录确认归属。Edge 的 `UserDataDir` 策略可以覆盖启动参数，遇到覆盖时应报告受管模式不可用。 [Chromium 配置目录说明](https://github.com/chromium/chromium/blob/main/docs/user_data_dir.md) · [Firefox 启动参数](https://firefox-source-docs.mozilla.org/browser/CommandLineParameters.html#startup-and-profiles) · [Edge 配置目录策略](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/userdatadir) · [Edge 后台进程说明](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/startupboostenabled)
+
+### 重复启动的模式校验
+
+普通 `Start.cmd` 和 `Start.cmd -NoBrowser` 请求同一种手动停机模式，区别仅在是否打开页面。`-ManagedBrowser` 请求关窗停机模式。`auto` 解析为实际浏览器可执行文件后按同一规则判断。
+
+| 运行实例 | 新的启动请求 | 处理 |
+| --- | --- | --- |
+| 手动停机 | 普通启动或 `-NoBrowser` | 复用实例。普通启动打开页面，`-NoBrowser` 直接返回服务地址。 |
+| 受管浏览器 | 同一浏览器和项目配置目录 | 复用已绑定的会话。 |
+| 手动停机或受管浏览器 | 另一种停机模式，或另一个受管浏览器 | 以非零退出码返回模式冲突，提示先执行 `Stop.cmd` 再启动。保留运行实例和原停机方式。 |
+
+在 `service_manager.py` 的启动复用入口双向检查模式，先判断兼容性，再返回服务地址或打开页面。并发启动由已有实例锁决定归属，后到请求等待管理状态可用后执行同一检查。已开始停机的实例继续完成停机。直接打开网页属于访问现有服务，停机方式由启动时绑定的实例决定。 [服务管理器](../integration/service_manager.py)
 
 ### Firefox 适配
 
@@ -42,6 +54,14 @@ ForSLM 可以用 Edge、Chrome、Firefox 正式版或 Firefox ESR 启动独立�
 
 默认入口的页面连接仍用于末页卸载。整套停机依据受管会话的真实窗口状态，因此在 ForSLM 页面已经关闭、浏览器后台进程仍存活或浏览器跳过确认框时都能判定。观察状态无法确认时，`Stop.cmd` 仍可停止服务。 [Win32 顶层窗口枚举](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-enumwindows) · [Win32 窗口进程查询](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getwindowthreadprocessid)
 
+## 末页卸载失败的重试
+
+宽限期结束且没有在途任务时，管理器对项目自有的可卸载模型逐个确认结果。以路由器 `GET /models` 返回的 `unloaded` 为完成条件。单个模型确认后退出本轮重试，其他模型的失败独立处理。 [模型网关](../integration/model_gateway.py) · [页面观察器](../integration/service_manager.py)
+
+1. **有限重试。** 每个未确认卸载的模型在初次尝试后最多重试两次，分别等待 2 秒和 5 秒。重试时先读取模型状态。若上次响应丢失但模型已卸载，直接记录完成。接口超时或失败且实际状态无法确认时，沿用模型网关的状态恢复逻辑。
+2. **重新核对准入。** 每次重试前确认仍是同一次末页断开，且没有项目页面、在途问答、模型调用或活跃推理槽位。新请求进行中时延后检查。页面重连取消尚未发出的重试，已发出的卸载完成状态核对后恢复请求准入。收到整套停机请求时进入统一停机。退避期间服务照常接收请求。
+3. **如实记录结果。** 重试耗尽后记录模型名、尝试次数及最后的错误，留待下一次末页断开重新判断。模型 API 和其他服务继续监听。卸载未确认的模型保持其实际状态，管理器不将其计为已回收。
+
 ## 验收
 
 从实际 `Start.cmd -ManagedBrowser` 进入。记录浏览器版本、触发来源、受管窗口变化、在途任务处理结果和项目进程退出情况。Edge、Chrome、Firefox 正式版及 Firefox ESR 均执行关窗用例。
@@ -55,10 +75,13 @@ ForSLM 可以用 Edge、Chrome、Firefox 正式版或 Firefox ESR 启动独立�
 | 浏览器后台常驻、浏览器异常退出、窗口枚举失败 | 后台进程常驻时仍能按主窗口关闭停机。异常退出按实例归属及窗口消失判定。枚举失败记录原因，观测恢复前服务保持可用。 |
 | 浏览器路径错误、策略覆盖配置目录、配置目录冲突、启动器交接失配、重复启动 | 报告具体故障。回滚本次受管启动的资源，个人浏览器和已有普通或无浏览器实例继续运行。 |
 | 在搜索、生成或直接模型请求期间关窗，同时调用 `Stop.cmd` | 只进入一次停机。获准的任务在宽限期内收尾或被取消。核对项目自启的端口和进程均已退出，复用服务仍响应。 |
+| 一个模型卸载成功，另一个模型的卸载请求遇到一次临时连接错误 | 仅对未确认的模型重试。最后确认两个模型均为 `unloaded`，四个服务仍可访问。 |
+| 卸载响应丢失、重试等待期间重开页面或发起请求、重试耗尽 | 已卸载的模型通过状态查询确认完成。重连取消本轮重试，在途请求使重试延后。达到次数上限后保留服务，日志指出未确认卸载的模型。 |
+| 受管实例运行时执行普通启动或 `-NoBrowser`，以及反向请求受管模式 | CLI 返回冲突，原管理实例及其停机方式保持。显式停止后按目标模式启动成功。同模式的重复启动仍复用当前实例。 |
 
 用实际配置中的端口核对停机。默认检查 `3000`、`8888`、`8080` 和 `8081`，以及项目创建的模型路由、模型子进程、Python、Node 和服务管理器。外部复用端口按归属单独验证。
 
-运行窗口观察与浏览器选择的回归测试。
+运行窗口观察、启动模式和模型卸载重试的回归测试。
 
 ```powershell
 .\runtime\webui-env\Scripts\python.exe -m unittest discover -s tests -v

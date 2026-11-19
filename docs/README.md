@@ -11,7 +11,7 @@
 | 关闭普通项目页 | 仍有其他项目页时继续处理请求。最后一页关闭且在途任务结束后，卸载支持路由的项目自有模型。 |
 | `Stop.cmd` | 停止接收新任务，在宽限期内等待在途任务结束，随后取消剩余任务并停止本次启动的服务。 |
 
-受管模式使用 `runtime/browser-*` 存放独立浏览器配置。Firefox 正式版和 ESR 按可执行文件路径使用各自的配置目录。切换浏览器，或从普通入口及无浏览器模式改用受管模式时，先运行 `Stop.cmd`。
+受管模式使用 `runtime/browser-*` 存放独立浏览器配置。Firefox 正式版和 ESR 按可执行文件路径使用各自的配置目录。切换浏览器或在手动停机与受管停机之间切换时，先运行 `Stop.cmd`。
 
 [启动脚本](../Start.ps1) · [停止脚本](../Stop.ps1) · [服务管理器](../integration/service_manager.py)
 
@@ -36,9 +36,9 @@ Windows Job Object 管理本次创建的模型路由、Open WebUI、SearXNG 和�
 
 公开的模型地址经管理进程转发，保留模型发现、流式响应和推理错误。客户端断开会关闭上游请求，卸载前核对模型槽位。Open WebUI 通过已认证的 Socket.IO 连接统计各项目页。至少出现一个项目页后，最后一个连接断开才启动卸载宽限期。页面快速重连会刷新计时，连接状态不可用时推迟卸载。
 
-宽限期结束且没有在途问答、模型调用和活跃推理槽位时，管理器通过 `POST /models/unload` 卸载模型，并用 `GET /models` 核对状态。卸载进行时的新请求等待卸载完成。状态无法确认时，推理请求收到可重试的 HTTP 503；路由状态可用后恢复准入。两个模型 API、Open WebUI 和 SearXNG 在卸载后继续监听。
+宽限期结束且没有在途问答、模型调用和活跃推理槽位时，管理器通过 `POST /models/unload` 卸载模型，并用 `GET /models` 核对状态。卸载进行时的新请求等待卸载完成。状态无法确认时，推理请求收到可重试的 HTTP 503；路由状态可用后恢复准入。卸载失败的模型在同一次末页断开期间最多重试两次，退避时继续接收请求。页面重连会取消尚未发出的重试。两个模型 API、Open WebUI 和 SearXNG 在卸载后继续监听。
 
-[Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) · [llama.cpp 模型路由](https://github.com/ggml-org/llama.cpp/blob/5c53396b8/tools/server/README.md#using-multiple-models)
+[Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) · [llama.cpp 模型路由](https://github.com/ggml-org/llama.cpp/blob/b12531/tools/server/README.md#using-multiple-models)
 
 ## 问答任务
 
